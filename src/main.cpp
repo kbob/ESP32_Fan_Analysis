@@ -3,8 +3,16 @@
 #include "driver/mcpwm_cap.h"
 #include "esp_private/esp_clk.h"
 
-#undef LISTEN_TO_PWM
+#define LISTEN_TO_PWM
 #define LOG_AFTERWARD
+
+// Scenarios, see enum scenario below:
+//   NO_SCENARIO
+//   BANG_BANG
+//   HALF_SPEED
+//   RAMP
+//   STAIRCASE
+#define THE_SCENARIO BANG_BANG
 
 #define PWM_PIN 2
 #define TACH_PIN 4
@@ -62,8 +70,8 @@ void report_error(err_type err,
                       subsystem, (int)err, (int)err, file, line);
         then = now;
       }
-      digitalWrite(LED_BUILTIN, now / 256 & 1);
     }
+    digitalWrite(LED_BUILTIN, now / 256 & 1);
   }
 }
 
@@ -102,22 +110,48 @@ void get_data(float new_values[DATA_COUNT]) {
 #ifdef LOG_AFTERWARD
 
 typedef uint32_t log_event_type;
-const size_t LOG_MAX_SECONDS = 60;
+const size_t LOG_MAX_SECONDS = 30;
 const size_t LOG_MAX_PER_SECOND = 60000;
 const size_t LOG_MAX_EVENTS = LOG_MAX_SECONDS * LOG_MAX_PER_SECOND;
 size_t log_index = 0;
 log_event_type *psram_log_data = NULL;
+volatile bool logging_enabled;
 
-void store_value(uint32_t value) {
-  if (log_index < LOG_MAX_EVENTS) {
+void enable_logging() {
+  RTOS_CHECK_TRUE(xSemaphoreTake(data_mutex, portMAX_DELAY));
+  log_index = 0;
+  logging_enabled = true;
+  RTOS_CHECK_TRUE(xSemaphoreGive(data_mutex));
+}
+
+void disable_logging() {
+  RTOS_CHECK_TRUE(xSemaphoreTake(data_mutex, portMAX_DELAY));
+  logging_enabled = false;
+  RTOS_CHECK_TRUE(xSemaphoreGive(data_mutex));
+}  
+
+inline bool log_value_no_lock(uint32_t value) {
+  if (logging_enabled && log_index < LOG_MAX_EVENTS) {
     psram_log_data[log_index++] = value;
+    return true;
   }
+  return false;
+}
+
+void log_value(uint32_t value) {
+  RTOS_CHECK_TRUE(xSemaphoreTake(data_mutex, portMAX_DELAY));
+  log_value_no_lock(value);
+  RTOS_CHECK_TRUE(xSemaphoreGive(data_mutex));
 }
 
 void dump_log() {
-  Serial.println();
-  Serial.printf("%lz events logged\n", log_index);
-  Serial.println();
+  CHECK_EQ(logging_enabled, false);
+  printf("\n%lu events logged\n\n", (uint32_t)log_index);
+  for (size_t i = 0; i < log_index; i++) {
+    printf("%x%c", psram_log_data[i], ((i % 8) == 7) ? '\n' : ' ');
+    if (i % 8 == 7) { delay(1); }
+  }
+  printf("\n\n");
 }
 
 #endif
@@ -126,8 +160,11 @@ void setup_data() {
   data_mutex = xSemaphoreCreateMutex();
   RTOS_CHECK_NONNULL(data_mutex);
 #ifdef LOG_AFTERWARD
+  Serial.printf("size = %lu\n", LOG_MAX_EVENTS * sizeof *psram_log_data);
   psram_log_data = 
     (log_event_type *)ps_malloc(LOG_MAX_EVENTS * sizeof *psram_log_data);
+  Serial.printf("psram_log_data = %p\n", psram_log_data);
+  CHECK_NONNULL(psram_log_data);
 #endif
 }
 
@@ -135,11 +172,22 @@ void setup_data() {
 // PWM  // ------ // ------ // ------ // ------ // ------ // ------ // ------ //
 
 #define PWM_FREQUENCY 25000
-//#define PWM_FREQUENCY 39
 #define PWM_BITS 10
 #define PWM_RESOLUTION (1 << PWM_BITS)
 
-// #define SLOW_BOY 
+enum scenario {
+  NO_SCENARIO,
+  BANG_BANG,
+  HALF_SPEED,
+  RAMP,
+  STAIRCASE,
+};
+
+// #define SLOW_BOY
+
+void set_pwm(uint16_t duty) {
+  CHECK_TRUE(ledcWrite(PWM_PIN, duty));
+}
 
 void update_duty() {
 
@@ -148,8 +196,8 @@ void update_duty() {
   const int MIN_DUTY = 31;
   const int STEP_DUTY = 40;
 #else
-  const int MAX_DUTY = PWM_RESOLUTION - 1;
-  const int MIN_DUTY = 0;
+  const int MAX_DUTY = PWM_RESOLUTION - 20;
+  const int MIN_DUTY = 1;
   const int STEP_DUTY = PWM_RESOLUTION / 3.6;
 #endif
 
@@ -166,10 +214,136 @@ void update_duty() {
   }
   // Serial.printf("duty %d/%d   \n", duty, MAX_DUTY);
   update_datum(DATUM_DUTY, (float)duty / (float)MAX_DUTY);
-  CHECK_TRUE(ledcWrite(PWM_PIN, duty));
+  // CHECK_TRUE(ledcWrite(PWM_PIN, duty));
+  set_pwm(duty);
+}
+
+void bang_bang_scenario() {
+  Serial.printf("\nBang-bang scenario\n");
+  set_pwm(0);
+  delay(1000); // settle
+  enable_logging();
+  delay(1000);
+  set_pwm(PWM_RESOLUTION - 1);
+  delay(5000);
+  set_pwm(0);
+  delay(5000);
+  disable_logging();
+  delay(2);
+  dump_log();
+  delay(10000);
+}
+
+void half_speed_scenario() {
+  Serial.printf("\nHalf speed scenario\n");
+  set_pwm(PWM_RESOLUTION / 2);
+  delay(5000); // settle
+  enable_logging();
+  delay(5000);
+  disable_logging();
+  delay(2);
+  dump_log();
+  delay(10000);
+}
+
+void ramp_scenario() {
+  Serial.printf("\nRamp scenario\n");
+
+  // Step from 0..1023 by 4 over 5 seconds
+  float ideal_sec_per_step = 5.0 / 1024;
+  int pwms_per_step = ideal_sec_per_step * PWM_FREQUENCY; // round down
+  int usec_per_step = pwms_per_step * 1000000 / PWM_FREQUENCY;
+  // printf("ideal sec/step = %g\n", ideal_sec_per_step);
+  // printf("PWM/step = %d\n", pwms_per_step);
+  // printf("usec/step = %d\n", usec_per_step);
+
+  set_pwm(0);
+  delay(5000); // settle
+  enable_logging();
+  delay(1000);
+
+  // Ramp up
+  uint32_t start = micros();
+  for (int i = 0; i < PWM_RESOLUTION; i++) {
+    while (micros() - start < usec_per_step)
+        continue;
+    set_pwm(i);
+    start += usec_per_step;
+  }
+
+  delay(100);
+
+  // Go back down
+  start = micros();
+  for (int i = PWM_RESOLUTION - 1; --i >= 0; ) {
+    while (micros() - start < usec_per_step)
+      continue;
+    set_pwm(i);
+    start += usec_per_step;
+  }
+  delay(1000);
+  disable_logging();
+  delay(2);
+  dump_log();
+  delay(10000);
+}
+
+void staircase_scenario() {
+  Serial.printf("\nStaircase scenario\n");
+  const int step_size = PWM_RESOLUTION / 8;
+  const int step_msec = 1600;
+
+  set_pwm(0);
+  delay(2000); // settle
+  enable_logging();
+  delay(500);
+
+  for (int i = 0; i < PWM_RESOLUTION; i += step_size) {
+    set_pwm(i);
+    // printf("up to %d\n", i);
+    delay(step_msec);
+  }
+  set_pwm(PWM_RESOLUTION - 1);
+  delay(step_msec);
+
+  for (int i = PWM_RESOLUTION; (i -= step_size) >= 0; ) {
+    set_pwm(i);
+    // printf("down to %d\n", i);
+    delay(step_msec);
+  }
+
+  disable_logging();
+  delay(2);
+  dump_log();
+  delay(10000);
 }
 
 void pwm_change_duty_task_main(void *) {
+
+  delay(100);
+  switch (THE_SCENARIO) {
+
+  case NO_SCENARIO:
+    break;
+
+  case BANG_BANG:
+    bang_bang_scenario();
+    break;
+
+  case HALF_SPEED:
+    half_speed_scenario();
+    break;
+
+  case RAMP:
+    ramp_scenario();
+    break;
+
+  case STAIRCASE:
+    staircase_scenario();
+    break;
+  }
+
+  // After each scenario, fall back to the chunky ramp.
 
   while (1) {
     update_duty();
@@ -183,7 +357,7 @@ void setup_pwm() {
 
   RTOS_CHECK_PASS(xTaskCreate(pwm_change_duty_task_main,
                               "PWM change duty task",
-                              20480,
+                              30480,
                               NULL,
                               1,
                               NULL));
@@ -226,6 +400,9 @@ tach_capture_callback(mcpwm_cap_channel_handle_t channel,
 #endif
   evt.dir = edata->cap_edge == MCPWM_CAP_EDGE_POS;
   evt.count = edata->cap_value;
+  if (log_value_no_lock(evt.int_value)) {
+    return false;
+  }
 
   static int updown;
   updown = 1 - updown;
@@ -265,7 +442,7 @@ void tach_task_main(void *) {
       duration &= (1 << 30) - 1;
       prev_count[chan_index][dir_index] = evt.count;
       rev_duration[chan_index][dir_index] = duration;
-      Serial.printf("%s %d %d %d\n", __func__, evt.channel, evt.dir, evt.count);
+      // Serial.printf("%s %d %d %d\n", __func__, evt.channel, evt.dir, evt.count);
 #else
       size_t index = evt.dir;
       uint32_t duration = (evt.count - prev_count[index]);
@@ -273,7 +450,7 @@ void tach_task_main(void *) {
       prev_count[index] = evt.count;
       rev_duration[index] = duration;
 #endif
-      if (duration < RIDICULOUS_DURATION) {
+      if (true || duration < RIDICULOUS_DURATION) {
 #ifdef LISTEN_TO_PWM
         float pos_us = rev_duration[0][MCPWM_CAP_EDGE_POS] * CLKS_to_USEC;
         float neg_us = rev_duration[0][MCPWM_CAP_EDGE_NEG] * CLKS_to_USEC;
@@ -294,8 +471,6 @@ void tach_task_main(void *) {
       } else {
         Serial.printf("ridiculous %d\n", duration);
       }
-    } else {
-      Serial.printf("%s: no event\n", __func__);
     }
   }
 }
@@ -341,7 +516,7 @@ void setup_tach() {
   TaskHandle_t tach_task = NULL;
   RTOS_CHECK_PASS(xTaskCreate(tach_task_main,
                               "Tach task",
-                              2048,
+                              20480,
                               NULL,
                               1,
                               &tach_task));
@@ -395,7 +570,7 @@ void plotter_update() {
   }
   Serial.println();
 #else
-  Serial.printf("Duty:%g,Speed:%g\n", values[0], values[1]);
+  // Serial.printf("Duty:%g,Speed:%g\n", values[0], values[1]);
 #endif
 }
 
@@ -410,12 +585,12 @@ void plotter_main(void *) {
 void setup_plotter() {
   RTOS_CHECK_PASS(xTaskCreate(plotter_main,
                   "plotter task",
-                  2048,
+                  20480,
                   NULL,
                   1,
                   &plotter_task));
   TimerHandle_t timer = xTimerCreate("plot interval",
-                                     pdMS_TO_TICKS(999),
+                                     pdMS_TO_TICKS(100),
                                      pdTRUE,
                                      NULL,
                                      plotter_wakeup);
@@ -431,15 +606,20 @@ void setup() {
   delay(5000);
   Serial.printf("Let's go!\n");
 
-  setup_data();
-  setup_pwm();
-  setup_tach();
-  setup_plotter();
+  // setup_data();
+  // setup_pwm();
+  // setup_tach();
+  // if (THE_SCENARIO == NO_SCENARIO) {
+  //   setup_plotter();
+  // }
 
-  Serial.printf("heap  size %d\n", ESP.getHeapSize());
-  Serial.printf("heap  free %d\n", ESP.getFreeHeap());
-  Serial.printf("PSRAM size %d\n", ESP.getPsramSize());
-  Serial.printf("PSRAM free %d\n", ESP.getFreePsram());
+  Serial.printf("heap  size %8d\n", ESP.getHeapSize());
+  Serial.printf("heap  free %8d\n", ESP.getFreeHeap());
+  Serial.printf("PSRAM size %8d\n", ESP.getPsramSize());
+  Serial.printf("PSRAM free %8d\n", ESP.getFreePsram());
+  Serial.printf("APB clock = %d Hz\n", getApbFrequency());
+  Serial.printf("APB clock = %d Hz\n", esp_clk_apb_freq());
+
 }
 
 void loop() {}
