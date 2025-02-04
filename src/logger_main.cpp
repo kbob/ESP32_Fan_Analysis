@@ -29,8 +29,8 @@ PWM<PWM_CORE, PWM_PIN> pwm;
 Capture<CAPTURE_CORE, PWM_LOOPBACK_PIN, TACH_PIN> capture;
 
 void print_facts() {
-    // printf("CPU clock %d Hz\n", esp_clk_cpu_freq());
-    // printf("APB clock %d Hz\n", esp_clk_apb_freq());
+    printf("CPU clock %d Hz\n", esp_clk_cpu_freq());
+    printf("APB clock %d Hz\n", esp_clk_apb_freq());
     // printf("setup core id %d\n", xPortGetCoreID());
     // heap_caps_dump_all();
     // esp_intr_dump(stdout);

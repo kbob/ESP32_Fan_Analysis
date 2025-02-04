@@ -69,14 +69,16 @@ public:
         taskEXIT_CRITICAL(&spinlock);
     }
 
-    static void record_trace_from_ISR(const TraceEvent evt) {
-        taskENTER_CRITICAL_ISR(&spinlock);
+    static void
+    inline
+    record_trace_from_ISR(const TraceEvent evt) {
+        // taskENTER_CRITICAL_ISR(&spinlock);
         {
-            if (tracing_enabled && trace_index < MAX_TRACES) {
+            if (tracing_enabled &&trace_index < MAX_TRACES) {
                 psram_trace_buffer[trace_index++] = evt;
             }
         }
-        taskEXIT_CRITICAL_ISR(&spinlock);
+        // taskEXIT_CRITICAL_ISR(&spinlock);
     }
 
     static void dump_trace_buffer(const char *title) {

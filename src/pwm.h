@@ -200,12 +200,23 @@ PWM<CORE, PWM_PIN>::do_run_script(Script script) {
         break;
 
     case RAMPS:
+#undef SHORT_RAMPS
+#ifdef SHORT_RAMPS
+        hold_at(0.0, settling_msec);
+        begin_recording();
+        fade_to(0.1, 500);
+        hold_at(0.9, 1);
+        fade_to(1.0, 500);
+        hold_current(1);
+        end_recording();
+#else
         hold_at(0.0, settling_msec);
         begin_recording();
         fade_to(1.0, 5000);
         fade_to(0.0, 5000);
         hold_current(settling_msec);
         end_recording();
+#endif
         break;
 
     case STAIRCASE:

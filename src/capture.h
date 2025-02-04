@@ -27,7 +27,8 @@ public:
 
 private:
     mcpwm_cap_channel_handle_t tach_capture_channel = NULL;
-    mcpwm_cap_channel_handle_t pwm_capture_channel = NULL;
+    mcpwm_cap_channel_handle_t pwm_up_capture_channel = NULL;
+    mcpwm_cap_channel_handle_t pwm_dn_capture_channel = NULL;
     TaskHandle_t task_handle = NULL;
 
     void run() {
@@ -70,44 +71,60 @@ private:
             mcpwm_capture_channel_register_event_callbacks(
                 tach_capture_channel, &callbacks, this));
 
-#define LISTEN_TO_PWM
-#ifdef LISTEN_TO_PWM
-        // Init pwm capture channel
-        mcpwm_capture_channel_config_t pwm_cap_ch_conf = {
-        .gpio_num = PWM_IN_PIN,
-        .intr_priority = 1,
-        .prescale = 1,
-        .flags = {
-            .pos_edge = true,
-            .neg_edge = true,
-            .pull_up = false,
-            .pull_down = false,
-            .invert_cap_signal = false,
-            .io_loop_back = false,
-            
-            .keep_io_conf_at_exit = false,
+        // Init pwm rising edge capture channel
+        mcpwm_capture_channel_config_t pwm_up_cap_ch_conf = {
+            .gpio_num = PWM_IN_PIN,
+            .intr_priority = 1,
+            .prescale = 1,
+            .flags = {
+                .pos_edge = true,
+                .neg_edge = false,
+                .pull_up = false,
+                .pull_down = false,
+                .invert_cap_signal = false,
+                .io_loop_back = false,
+                .keep_io_conf_at_exit = false,
             },
         };
-        pwm_cap_ch_conf.flags.pos_edge = true;
-        pwm_cap_ch_conf.flags.neg_edge = true;
         ESP_CHECK_OK(mcpwm_new_capture_channel(
                      cap_timer,
-                     &pwm_cap_ch_conf,
-                     &pwm_capture_channel));
+                     &pwm_up_cap_ch_conf,
+                     &pwm_up_capture_channel));
         
         ESP_CHECK_OK(
             mcpwm_capture_channel_register_event_callbacks(
-                pwm_capture_channel, &callbacks, this));
+                pwm_up_capture_channel, &callbacks, this));
 
-#endif
+        // Init pwm falling edge capture channel
+        mcpwm_capture_channel_config_t pwm_dn_cap_ch_conf = {
+            .gpio_num = PWM_IN_PIN,
+            .intr_priority = 1,
+            .prescale = 1,
+            .flags = {
+                .pos_edge = false,
+                .neg_edge = true,
+                .pull_up = false,
+                .pull_down = false,
+                .invert_cap_signal = false,
+                .io_loop_back = false,
+                .keep_io_conf_at_exit = false,
+            },
+        };
+        ESP_CHECK_OK(mcpwm_new_capture_channel(
+                     cap_timer,
+                     &pwm_dn_cap_ch_conf,
+                     &pwm_dn_capture_channel));
+        
+        ESP_CHECK_OK(
+            mcpwm_capture_channel_register_event_callbacks(
+                pwm_dn_capture_channel, &callbacks, this));
 
         // Enable tach capture channel
         ESP_CHECK_OK(mcpwm_capture_channel_enable(tach_capture_channel));
 
-#ifdef LISTEN_TO_PWM
-        // Enable pwm capture channel
-        ESP_CHECK_OK(mcpwm_capture_channel_enable(pwm_capture_channel));
-#endif
+        // Enable pwm capture channels
+        ESP_CHECK_OK(mcpwm_capture_channel_enable(pwm_up_capture_channel));
+        ESP_CHECK_OK(mcpwm_capture_channel_enable(pwm_dn_capture_channel));
 
         // Enable and start capture timer
         ESP_CHECK_OK(mcpwm_capture_timer_enable(cap_timer));
@@ -129,7 +146,9 @@ private:
                      void *user_data) {
         Capture *cap = static_cast<Capture *>(user_data);
 
-        uint8_t chan = cap_channel == cap->pwm_capture_channel;
+        assert(edata->cap_edge == MCPWM_CAP_EDGE_POS ||
+               edata->cap_edge == MCPWM_CAP_EDGE_NEG);
+        uint8_t chan = cap_channel != cap->tach_capture_channel;
         uint8_t dir = edata->cap_edge == MCPWM_CAP_EDGE_POS;
         uint32_t timestamp = edata->cap_value;
         TraceEvent evt(chan, dir, timestamp);
