@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import sys
+
 # Fan parameters
 PWM_FREQ = 25_000
 TACH_PULSES_PER_REV = 2
@@ -71,7 +73,6 @@ class Scenario:
         chan, dir, clk = self._decode(edges)
 
         offset = clk[0] - start_clk
-        print(f'{offset=}')
 
         pwm_edges = edges[chan == 1]
         tach_edges = edges[chan == 0]
@@ -84,12 +85,9 @@ class Scenario:
         # N.B., sometimes edges are out of order, so the data
         # may wrap backward as well as forward.
         edges = np.array(edges, dtype=np.int64)
-        delta = edges[1:] - edges[:-1]
+        delta = np.diff(edges)
         overflow = delta < -2**31
         underflow = delta > +2**31
-        # print(f'{len(overflow)=}')
-        # print(f'{overflow.nonzero()[0]=}')
-        # print(f'{underflow.nonzero()[0]=}')
         eitherflow = overflow.astype(np.int64) - underflow.astype(np.int64)
         adjustment = 2**32 * eitherflow.cumsum()
         adjustment = np.hstack([[0], adjustment])
@@ -123,7 +121,8 @@ assert list(unwrapped) == [0xFFFFFFFE, 0x100000000, 0x100000001, 0xFFFFFFFF,
 
 
 def verify_alternating_edges(scenario):
-    print(f'Verifying {scenario.description}')
+    if verbose:
+        print(f'Verifying {scenario.description}')
     for sig in [scenario.pwm, scenario.tach]:
         dir = sig.dir
         if len(dir):
@@ -141,42 +140,118 @@ def verify_alternating_edges(scenario):
                 for i in anomalies[:3]:
                     neighbors = np.arange(max(0, i - 4), i + 5)
                     n_clk = sig.clk[neighbors]
-                    n_delta = n_clk[1:] - n_clk[:-1]
+                    n_delta = np.diff(n_clk)
                     print(f'{scenario.description}: {sig.name}')
                     print(f'    at {i}')
                     print(f'    dir {dir[neighbors]}')
                     print(f'    clk {n_clk}')
                     print(f'    clk \u0394 {n_delta}')
-                delta = sig.clk[1:] - sig.clk[:-1]
+                delta = np.diff(sig.clk)
                 print(f'{sig.name}: {np.histogram(delta)=}')
                 # raise
             
 
 def check_ordering(scenario):
-    print(f'Checking edge order in {scenario.description}')
+    if verbose:
+        print(f'Checking edge order in {scenario.description}')
     for sig in [scenario.pwm, scenario.tach]:
-        dir = sig.dir
-        # print(f'{sig.name}')
-        if len(dir) == 0:
+        if len(sig.clk) == 0:
             continue
-        delta = sig.clk[1:] - sig.clk[:-1]
+        delta = np.diff(sig.clk)
         neg_indices = (delta < 0).nonzero()[0]
         if len(neg_indices):
-            # print(f'{len(sig.clk)=}')
             print(f'{sig.name}: {len(neg_indices)} out of order sample(s)')
             print(f'{sig.name}: {neg_indices=}')
-            # print(f'{sig.name}: {len(neg_indices)=}')
             print(f'{sig.name}: {min(delta[neg_indices])=}')
-            # print(f'{sig.clk[591080:591096]=}')
-            # print()
 
+
+def fixup_tach_dir(scenario):
+    if verbose:
+        print(f'Fixing up tach directions in {scenario.description}')
+    tach = scenario.tach
+    dir = tach.dir
+    even = dir[::2]
+    odd = dir[1::2]
+    if even.sum() > odd.sum():
+        # rising edge first
+        ones = even
+        zeroes = odd
+        offset = 2
+        prefix = [1, 0]
+    else:
+        # falling edge first
+        ones = odd
+        zeroes = even
+        offset = 1
+        prefix = [1]
+    assert (zeroes == 0).all()
+    if (ones == 1).all():
+        # no fixup needed
+        return
+
+    anomalies = (ones == 0).nonzero()[0]
+    assert anomalies.size < 0.01 * dir.size, "Too many anomalous events"
+    anom_indices = 2 * anomalies + offset
+    p_dir = np.hstack([prefix, dir])
+    p_anom_indices = anom_indices + offset
+
+    def check_sequence(ix):
+        neighbors = np.arange(5) + ix - 1
+        n_dir = list(p_dir[neighbors])
+        return n_dir == [1, 0, 0, 0, 1]
+
+    def check_timing(ix):
+        if ix == 0 or ix == len(tach.clk) - 1:
+            return True
+        delta0 = tach.clk[ix] - tach.clk[ix - 1]
+        delta1 = tach.clk[ix + 1] - tach.clk[ix]
+        change = abs((delta0 - delta1) / (delta0 + delta1))
+        return change < 0.01
+
+    for ix in anom_indices:
+        assert check_sequence(ix), "unexpected direction sequence"
+        assert check_timing(ix), "abrupt timing change"
+    # All good, modify the signal
+    for ix in anom_indices:
+        tach.dir[ix] = 1
+
+
+def check_pwm_spacing(scenario):
+    if verbose:
+        print(f'Checking PWM timing in {scenario.description}')
+    pwm = scenario.pwm
+    rising_clks = pwm.clk[pwm.dir == 0]
+    intervals = np.diff(rising_clks)
+    idict = {}
+    while intervals.size:
+        k = int(intervals[0])
+        idict[k] = intervals[intervals == k].size
+        intervals = intervals[intervals != k]
+    expected = CLK_FREQ / PWM_FREQ
+    anom = {k: idict[k] for k in idict if k != expected and k < 1_000_000}
+    if anom:
+        print(f'{scenario.description}: unstable PWM timing', file=sys.stderr)
+        for k in anom:
+            nsamp = idict[k]
+            usec = k / CLK_FREQ * 1_000_000
+            print(f'   {nsamp} samples at {usec:.6} usec', file=sys.stderr)
+
+
+verbose = False
 
 def main(argv):
-    for file in argv[1:]:
+    args = argv[1:]
+    if args[:1] in (['-v'], ['--verbose']):
+        global verbose
+        verbose = True
+        args = args[1:]
+    for file in args:
         s = Scenario(file)
         check_ordering(s)
+        fixup_tach_dir(s)
+        check_pwm_spacing(s)
         verify_alternating_edges(s)
 
 if __name__ == '__main__':
-    import sys
     sys.exit(main(sys.argv))
+    
