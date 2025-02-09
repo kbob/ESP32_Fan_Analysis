@@ -155,8 +155,6 @@ def check_ordering(scenario):
     if verbose:
         print(f'Checking edge order in {scenario.description}')
     for sig in [scenario.pwm, scenario.tach]:
-        if len(sig.clk) == 0:
-            continue
         delta = np.diff(sig.clk)
         neg_indices = (delta < 0).nonzero()[0]
         if len(neg_indices):
