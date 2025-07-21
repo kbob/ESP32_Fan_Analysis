@@ -8,3 +8,4 @@ sdkconfig.*.old
 .venv
 *.png
 __pycache__/
+CMakeLists.txt
