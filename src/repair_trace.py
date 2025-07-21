@@ -2,122 +2,123 @@
 
 import sys
 
-# Fan parameters
-PWM_FREQ = 25_000
-TACH_PULSES_PER_REV = 2
-FAN_MAX_SPEED = 5000
+# # Fan parameters
+# PWM_FREQ = 25_000
+# TACH_PULSES_PER_REV = 2
+# FAN_MAX_SPEED = 5000
 
-# MCU parameters
-CLK_FREQ = 80_000_000
-PWM_BITS = 11
-PWM_RESOLUTION = 2**PWM_BITS
+# # MCU parameters
+# CLK_FREQ = 80_000_000
+# PWM_BITS = 11
+# PWM_RESOLUTION = 2**PWM_BITS
 
 
-from collections import namedtuple
-from enum import IntEnum
+# from collections import namedtuple
+# from enum import IntEnum
 import numpy as np
-import re
+# import re
+
+from src.scenario import (CLK_FREQ, PWM_FREQ, Scenario)
+
+# class Channel(IntEnum):
+#     PWM = 1
+#     TACH = 0
+
+# class Dir(IntEnum):
+#     RISING = 1
+#     FALLING = 0
 
 
-class Channel(IntEnum):
-    PWM = 1
-    TACH = 0
-
-class Dir(IntEnum):
-    RISING = 1
-    FALLING = 0
-
-
-class Signal(namedtuple('Signal', 'name, chan, dir, clk')):
+# class Signal(namedtuple('Signal', 'name, chan, dir, clk')):
     
-    def rising_edges(self):
-        print(f'{self.dir=}')
-        print(f'{self.dir == Dir.RISING=}')
-        print(f'{Dir.RISING=}')
-        print(f'{1 == Dir.RISING=}')
-        print(f'{np.any(self.dir == Dir.RISING)=}')
-        return self.clk[self.dir == Dir.RISING]
+#     def rising_edges(self):
+#         print(f'{self.dir=}')
+#         print(f'{self.dir == Dir.RISING=}')
+#         print(f'{Dir.RISING=}')
+#         print(f'{1 == Dir.RISING=}')
+#         print(f'{np.any(self.dir == Dir.RISING)=}')
+#         return self.clk[self.dir == Dir.RISING]
     
-    def falling_edges(self):
-        return self.clk[self.dir == Dir.FALLING]
+#     def falling_edges(self):
+#         return self.clk[self.dir == Dir.FALLING]
 
 
-class Scenario:
+# class Scenario:
 
-    def __init__(self, file, start_sec = 0):
-        self.filename = file
-        self._read(file, start_clk=int(start_sec * CLK_FREQ))
+#     def __init__(self, file, start_sec = 0):
+#         self.filename = file
+#         self._read(file, start_clk=int(start_sec * CLK_FREQ))
 
-    def _read(self, file, start_clk=0):
-        contents = open(file).read()
-        m = re.search(r'.* scenario', contents)
-        assert m, f"can't find scenario description in {file}"
-        self.description = m.group(0)
-        m = re.search(r'(\d+) events logged', contents)
-        assert m, f"can't find event count in {file}"
-        self.edge_count = int(m.group(1))
+#     def _read(self, file, start_clk=0):
+#         contents = open(file).read()
+#         m = re.search(r'.* scenario', contents)
+#         assert m, f"can't find scenario description in {file}"
+#         self.description = m.group(0)
+#         m = re.search(r'(\d+) events logged', contents)
+#         assert m, f"can't find event count in {file}"
+#         self.edge_count = int(m.group(1))
 
-        hex_data = contents[m.span()[1]:]
-        hex_edges = re.findall(r'[\da-f]+', hex_data)
-        assert len(hex_edges) == self.edge_count
-        int_edges = [int(x, base=16) for x in hex_edges]
-        self.raw_edges = np.array(int_edges, dtype=np.uint32)
+#         hex_data = contents[m.span()[1]:]
+#         hex_edges = re.findall(r'[\da-f]+', hex_data)
+#         assert len(hex_edges) == self.edge_count
+#         int_edges = [int(x, base=16) for x in hex_edges]
+#         self.raw_edges = np.array(int_edges, dtype=np.uint32)
 
-        edges = self._unwrap(self.raw_edges)
-        # N.B. edges are now (signed) int64.
+#         edges = self._unwrap(self.raw_edges)
+#         # N.B. edges are now (signed) int64.
 
-        # Yes, really.  We captured some of the edges out of order
-        # due to software interrupt latency. 
-        edges.sort()    # sorts in place
+#         # Yes, really.  We captured some of the edges out of order
+#         # due to software interrupt latency. 
+#         edges.sort()    # sorts in place
 
-        chan, dir, clk = self._decode(edges)
+#         chan, dir, clk = self._decode(edges)
 
-        offset = clk[0] - start_clk
+#         offset = clk[0] - start_clk
 
-        pwm_edges = edges[chan == 1]
-        tach_edges = edges[chan == 0]
-        self.pwm = Signal('pwm', *self._decode(pwm_edges, offset=offset))
-        self.tach = Signal('tach', *self._decode(tach_edges, offset=offset))
+#         pwm_edges = edges[chan == 1]
+#         tach_edges = edges[chan == 0]
+#         self.pwm = Signal('pwm', *self._decode(pwm_edges, offset=offset))
+#         self.tach = Signal('tach', *self._decode(tach_edges, offset=offset))
 
-    def _unwrap(self, edges):
-        """Timestamps wrap around.  Convert to unwrapped."""
-        # This function will preserve the flags in the low bits.
-        # N.B., sometimes edges are out of order, so the data
-        # may wrap backward as well as forward.
-        edges = np.array(edges, dtype=np.int64)
-        delta = np.diff(edges)
-        overflow = delta < -2**31
-        underflow = delta > +2**31
-        eitherflow = overflow.astype(np.int64) - underflow.astype(np.int64)
-        adjustment = 2**32 * eitherflow.cumsum()
-        adjustment = np.hstack([[0], adjustment])
-        return edges + adjustment
+#     def _unwrap(self, edges):
+#         """Timestamps wrap around.  Convert to unwrapped."""
+#         # This function will preserve the flags in the low bits.
+#         # N.B., sometimes edges are out of order, so the data
+#         # may wrap backward as well as forward.
+#         edges = np.array(edges, dtype=np.int64)
+#         delta = np.diff(edges)
+#         overflow = delta < -2**31
+#         underflow = delta > +2**31
+#         eitherflow = overflow.astype(np.int64) - underflow.astype(np.int64)
+#         adjustment = 2**32 * eitherflow.cumsum()
+#         adjustment = np.hstack([[0], adjustment])
+#         return edges + adjustment
 
-        return edges
+#         return edges
 
-    def _decode(self, edges, offset=0):
-        # Each edge is 32 bits and encodes
-        #  - a channel (tach = 0, PWM = 1)
-        #  - a direction (falling = 0, rising = 1)
-        #  - a 30 bit timestamp
-        chan = edges & 1
-        dir = edges >> 1 & 1
-        clk = ((edges >> 2) - offset) # & 0x3FFF_FFFF
-        return (chan, dir, clk)
+#     def _decode(self, edges, offset=0):
+#         # Each edge is 32 bits and encodes
+#         #  - a channel (tach = 0, PWM = 1)
+#         #  - a direction (falling = 0, rising = 1)
+#         #  - a 30 bit timestamp
+#         chan = edges & 1
+#         dir = edges >> 1 & 1
+#         clk = ((edges >> 2) - offset) # & 0x3FFF_FFFF
+#         return (chan, dir, clk)
 
-    def __repr__(self):
-        return f'<{self.__class__.__name__}: {self.description}>'
+#     def __repr__(self):
+#         return f'<{self.__class__.__name__}: {self.description}>'
 
-    def __len__(self):
-        return self.edge_count;
+#     def __len__(self):
+#         return self.edge_count;
 
-# Quick unwrap test
-edges = np.array([0xFFFFFFFE, 0, 1, 0xFFFFFFFF,
-                  1, 2, 0x7FFFFFFF, 0xFFFF0000, 3], dtype=np.uint32)
-unwrapped = Scenario._unwrap(None, edges)
-assert list(unwrapped) == [0xFFFFFFFE, 0x100000000, 0x100000001, 0xFFFFFFFF,
-                           0x100000001, 0x100000002, 0x17FFFFFFF, 0x1FFFF0000,
-                           0x200000003]
+# # Quick unwrap test
+# edges = np.array([0xFFFFFFFE, 0, 1, 0xFFFFFFFF,
+#                   1, 2, 0x7FFFFFFF, 0xFFFF0000, 3], dtype=np.uint32)
+# unwrapped = Scenario._unwrap(None, edges)
+# assert list(unwrapped) == [0xFFFFFFFE, 0x100000000, 0x100000001, 0xFFFFFFFF,
+#                            0x100000001, 0x100000002, 0x17FFFFFFF, 0x1FFFF0000,
+#                            0x200000003]
 
 
 def verify_alternating_edges(scenario):
@@ -233,6 +234,14 @@ def check_pwm_spacing(scenario):
             nsamp = idict[k]
             usec = k / CLK_FREQ * 1_000_000
             print(f'   {nsamp} samples at {usec:.6} usec', file=sys.stderr)
+
+def repair_trace(trace, verbose=False):
+    globals()['verbose'] = verbose
+    check_ordering(trace)
+    fixup_tach_dir(trace)
+    check_pwm_spacing(trace)
+    verify_alternating_edges(trace)
+    return trace
 
 
 verbose = False

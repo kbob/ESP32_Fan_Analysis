@@ -9,13 +9,20 @@ import sys
 
 # Fan parameters
 PWM_FREQ = 25_000
-TACH_PULSES_PER_REV = 2
+TACH_PULSES_per_REV = 2
 FAN_MAX_SPEED = 5000
 
 # MCU parameters
 CLK_FREQ = 80_000_000
 PWM_BITS = 11
 PWM_RESOLUTION = 2**PWM_BITS
+
+#Derived constants
+CLK_PERIOD_sec = 1 / CLK_FREQ
+CLK_PERIOD_usec = 1_000_000 / CLK_FREQ
+PWM_PERIOD_sec = 1 / PWM_FREQ
+PWM_PERIOD_usec = 1_000_000 / PWM_FREQ
+CLKS_per_PWM = PWM_PERIOD_usec / CLK_PERIOD_usec
 
 
 class Channel(IntEnum):
@@ -45,7 +52,22 @@ class Scenario:
 
     def __init__(self, file, start_sec = 0):
         self.filename = file
+        self._duration = None
         self._read(file, start_clk=int(start_sec * CLK_FREQ))
+
+    @property
+    def duration(self):
+        if self._duration:
+            return self._duration
+        return max(np.concatenate([self.pwm.clk[-1:], self.tach.clk[-1:]]))
+
+    @duration.setter
+    def duration(self, duration):
+        self._duration = duration
+
+    @property
+    def title(self):
+        return self.description.replace(' scenario', '').title()
 
     def _read(self, file, start_clk=0):
         contents = open(file).read()
@@ -239,6 +261,7 @@ def repair(scenario, verbose=False):
     fixup_tach_dir(scenario, verbose)
     check_pwm_spacing(scenario, verbose)
     verify_alternating_edges(scenario, verbose)
+    return scenario
 
 
 def main(argv):
