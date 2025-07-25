@@ -42,11 +42,42 @@ class CICDecimator:
         return combed
 
 
-# def ss(s):
-#     sss = ' '.join(str(round(x)) for x in s)
-#     if len(sss) > 60:
-#         sss = sss[:57] + '...'
-#     return sss
+class CICPulseDecimator:
+
+    def __init__(self, R, M, N):
+        self.R = R
+        self.N = N
+        self.t0 = 0
+        self.acc = [0] * N
+        self.combs = [Comb(M) for i in range(N)]
+
+    def process_pulses(self, pulses, n):
+
+        decimated = []
+        j = 0
+        for t in range(self.t0, self.t0 + n, self.R):
+            # t1 = t + self.R
+            while j < len(pulses):
+                tp = pulses[j] # time of pulse
+                if tp >= t:
+                    break
+                print(f'{tp} - {self.t0}')
+                self.acc[0] += tp - self.t0
+                self.t0 = tp
+                j += 1
+            print(f'{t} - {self.t0} X')
+            self.acc[0] += t - self.t0
+            self.t0 = t
+            decimated.append(self.acc[0])
+
+
+        combed = decimated
+        for c in self.combs:
+            combed = c.process(combed)
+        
+        self.intermediates = Intermediates(None, None, decimated, combed)
+        return combed
+
 
 class Integrator:
 
