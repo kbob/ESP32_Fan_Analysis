@@ -18,7 +18,7 @@ import sys
 import numpy as np
 # import re
 
-from src.scenario import (CLK_FREQ, PWM_FREQ, Scenario)
+from scenario import (CLK_FREQ, PWM_FREQ, Scenario)
 
 # class Channel(IntEnum):
 #     PWM = 1

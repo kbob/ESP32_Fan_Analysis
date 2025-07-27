@@ -42,7 +42,7 @@
   - x = 0.2 seconds?
 - To filter, do the IIR calc, but the IIR calc recalculates α based on the current interval.
 
--  $ 1 - α = (1 - α_{0})^{\Delta t} $ - $ y_n = α x_n + (1 - α)x_{n-1} $
+-  $ 1 - α = (1 - α_{0})^{\Delta t} $ <br> $ y_n = α x_n + (1 - α)x_{n-1} $
 
 Try $α_0$ in the range 0.1 - 100 Hz.
 

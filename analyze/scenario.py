@@ -37,11 +37,11 @@ class Dir(IntEnum):
 class Signal(namedtuple('Signal', 'name, chan, dir, clk')):
     
     def rising_edges(self):
-        print(f'{self.dir=}')
-        print(f'{self.dir == Dir.RISING=}')
-        print(f'{Dir.RISING=}')
-        print(f'{1 == Dir.RISING=}')
-        print(f'{np.any(self.dir == Dir.RISING)=}')
+        # print(f'{self.dir=}')
+        # print(f'{self.dir == Dir.RISING=}')
+        # print(f'{Dir.RISING=}')
+        # print(f'{1 == Dir.RISING=}')
+        # print(f'{np.any(self.dir == Dir.RISING)=}')
         return self.clk[self.dir == Dir.RISING]
     
     def falling_edges(self):
@@ -273,6 +273,10 @@ def main(argv):
     for file in args:
         s = Scenario(file)
         repair(s, verbose)
+        tre = s.tach.rising_edges()
+        for (a, b) in zip(tre[:10], tre[1:11]):
+            # print(a, type(a), b, type(b))
+            print((b - a) // 512)
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv))
